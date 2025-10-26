@@ -102,3 +102,17 @@ app.post('/create-checkout-session', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Stripe API listening on :${PORT}`);
 });
+
+// === ここから diag 追加（server.js の他ルートの上でOK） ===
+app.get("/diag", (req, res) => {
+  const mode = (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_live_") ? "live" :
+               (process.env.STRIPE_SECRET_KEY ? "test" : "missing");
+  res.json({
+    ok: true,
+    mode,
+    priceMapKeys: Object.keys(PRICE_MAP),
+    // CORS 設定確認用
+    allowedOrigins
+  });
+});
+// === ここまで ===
