@@ -116,3 +116,78 @@ app.get("/diag", (req, res) => {
   });
 });
 // === ここまで ===
+
+// --- 診断用エンドポイント（安全版） ---
+app.get("/diag", (req, res) => {
+  try {
+    const mode = (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_live_")
+      ? "live"
+      : (process.env.STRIPE_SECRET_KEY ? "test" : "missing");
+
+    const priceMapKeys = Object.keys(PRICE_MAP || {});
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+      .split(",").map(s => s.trim()).filter(Boolean);
+
+    res.json({ ok: true, mode, priceMapKeys, allowedOrigins });
+  } catch (e) {
+    console.error("[/diag] error:", e);
+    res.status(500).send("diag error");
+  }
+});
+
+// --- 決済セッション作成：単品形式 と items配列 両対応 ---
+app.post("/create-checkout-session", express.json(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    let lineItems = [];
+
+    if (Array.isArray(body.items) && body.items.length > 0) {
+      // 形式A: { items: [{ id|productId|sku, qty|quantity }, ...] }
+      lineItems = body.items.map(it => {
+        const key =
+          it.id ?? it.productId ?? it.sku ?? it.item_id;
+        const priceId = PRICE_MAP[key];
+        return {
+          key,
+          price: priceId,
+          quantity: Number(it.qty ?? it.quantity ?? 1) || 1,
+        };
+      });
+    } else {
+      // 形式B: { productId|item_id|sku, quantity }
+      const key =
+        body.productId ?? body.item_id ?? body.sku;
+      if (!key) {
+        console.error("[create] No items / body:", body);
+        return res.status(400).json({ error: "No items" });
+      }
+      const priceId = PRICE_MAP[key];
+      lineItems = [{
+        key,
+        price: priceId,
+        quantity: Number(body.quantity ?? 1) || 1,
+      }];
+    }
+
+    // マッピング漏れ検出
+    const unknown = lineItems.filter(li => !li.price).map(li => li.key);
+    if (unknown.length) {
+      console.error("[create] Unknown product keys:", unknown, "known:", Object.keys(PRICE_MAP));
+      return res.status(400).json({ error: `Unknown productId: ${unknown.join(",")}` });
+    }
+
+    // Stripe セッション作成
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      line_items: lineItems.map(li => ({ price: li.price, quantity: li.quantity })),
+      success_url: (process.env.SUCCESS_URL || "https://your-app.onrender.com/success.html") + "?session_id={CHECKOUT_SESSION_ID}",
+      cancel_url: process.env.CANCEL_URL || "https://your-app.onrender.com/cancel.html",
+      allow_promotion_codes: true,
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error("[create] fatal:", err);
+    return res.status(500).json({ error: "Failed to create session" });
+  }
+});
